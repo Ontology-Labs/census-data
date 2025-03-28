@@ -1,28 +1,3 @@
-# pipelines/scraping/warpcast/channels/assets.py
-
-from dagster import asset, Config, AssetObservation, MetadataValue
-from typing import List
-from datetime import datetime
-import json
-import boto3
-import os
-import time
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# Import your scraper
-from pipelines.scraping.warpcast.channels.scrape import FarcasterChannelScraper
-
-# Configuration
-class FarcasterChannelsS3Config(Config):
-    channel_ids: List[str] = []  # Will be populated from env in the asset function
-    bucket_name: str = "census-farcaster-channel-data"
-    aws_region: str = "us-east-1"
-    requests_per_minute: int = 45
-    max_retries: int = 1
-    cutoff_days: int = 1000
-
 @asset
 def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
     """Asset that fetches Farcaster channel data and stores it in S3"""
@@ -81,15 +56,17 @@ def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
                 time.sleep(wait_time)
             
             metadata = scraper.get_channel_metadata(channel_id)
-            context.log.info(f"Metadata response: {metadata}")
             
-            # Check if request was successful
-            if metadata:
+            # Check if request was successful - looking for "channel" in response
+            if metadata and "channel" in metadata:
                 channel_dict["metadata"] = metadata
                 success = True
+                context.log.info(f"Successfully retrieved metadata for channel {channel_id}")
             else:
                 retry_count += 1
-                error_msg = f"Failed to get metadata for channel {channel_id}: {json.dumps(metadata.get('error', 'Unknown error'))}"
+                error_msg = f"Failed to get metadata for channel {channel_id}"
+                if metadata and "error" in metadata:
+                    error_msg += f": {json.dumps(metadata['error'])}"
                 context.log.error(error_msg)
                 channel_dict["errors"].append(error_msg)
         
@@ -106,13 +83,15 @@ def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
             
             followers = scraper.get_channel_followers(channel_id)
             
-            if followers and not followers.get('error'):
+            if followers and "followers" in followers:
                 success = True
                 channel_dict["followers"] = followers
                 context.log.info(f"Found {len(followers.get('followers', []))} followers for channel {channel_id}")
             else:
                 retry_count += 1
-                error_msg = f"Failed to get followers for channel {channel_id}: {json.dumps(followers.get('error', 'Unknown error'))}"
+                error_msg = f"Failed to get followers for channel {channel_id}"
+                if followers and "error" in followers:
+                    error_msg += f": {json.dumps(followers['error'])}"
                 context.log.error(error_msg)
                 channel_dict["errors"].append(error_msg)
         
@@ -132,13 +111,15 @@ def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
             
             members = scraper.get_channel_members(channel_id)
             
-            if members and not members.get('error'):
+            if members and "members" in members:
                 success = True
                 channel_dict["members"] = members
                 context.log.info(f"Found {len(members.get('members', []))} members for channel {channel_id}")
             else:
                 retry_count += 1
-                error_msg = f"Failed to get members for channel {channel_id}: {json.dumps(members.get('error', 'Unknown error'))}"
+                error_msg = f"Failed to get members for channel {channel_id}"
+                if members and "error" in members:
+                    error_msg += f": {json.dumps(members['error'])}"
                 context.log.error(error_msg)
                 channel_dict["errors"].append(error_msg)
         
@@ -158,13 +139,15 @@ def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
             
             casts = scraper.get_channel_casts(channel_id, cutoff_days=config.cutoff_days)
             
-            if casts and not casts.get('error'):
+            if casts and "casts" in casts:
                 success = True
                 channel_dict["casts"] = casts
                 context.log.info(f"Found {len(casts.get('casts', []))} casts for channel {channel_id}")
             else:
                 retry_count += 1
-                error_msg = f"Failed to get casts for channel {channel_id}: {json.dumps(casts.get('error', 'Unknown error'))}"
+                error_msg = f"Failed to get casts for channel {channel_id}"
+                if casts and "error" in casts:
+                    error_msg += f": {json.dumps(casts['error'])}"
                 context.log.error(error_msg)
                 channel_dict["errors"].append(error_msg)
         

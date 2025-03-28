@@ -1,21 +1,3 @@
-# pipelines/scraping/warpcast/channels/scrape.py
-
-import os
-import time
-import json
-import requests as r
-import logging
-from datetime import datetime, timezone, timedelta
-from dotenv import load_dotenv
-
-from . import helpers
-
-load_dotenv(override=True)
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 class FarcasterChannelScraper:
     def __init__(self, requests_per_minute=45):
         """
@@ -76,33 +58,35 @@ class FarcasterChannelScraper:
                 timestamp_str = timestamp_str[:-1] + '+00:00'
             return datetime.fromisoformat(timestamp_str)
 
-    def get_channel_metadata(self, channel_name):
+    def get_channel_metadata(self, channel_id):
         """
         Fetch channel metadata by channel ID (or 'channel_name') from the Neynar API.
-        Uses the helpers.query_neynar_api function.
         """
         self.apply_rate_limit()  # apply rate limit before calling the API
 
+        base_url = "https://api.neynar.com/v2/farcaster/channel"
         headers = {
             'accept': 'application/json',
             'api_key': self.NEYNAR_API_KEY
         }
         params = {
-            'id': channel_name
+            'id': channel_id
         }
-        endpoint = 'channel'
 
         try:
-            logger.info(f"Fetching channel metadata for: {channel_name}")
-            channel_metadata = helpers.query_neynar_api(endpoint, params, headers)
-            return channel_metadata
+            logger.info(f"Fetching channel metadata for: {channel_id}")
+            response = r.get(base_url, headers=headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            return data
         except r.RequestException as e:
-            logging.error(f"Error fetching channel metadata: {e}")
-            return None
+            logger.error(f"Error fetching channel metadata: {e}")
+            return self._handle_request_exception(e)
 
     def get_channel_followers(self, channel_id, limit=1000):
         """
         Get followers for a specific channel from the Neynar API.
+        Handles pagination to get all followers.
         """
         self.apply_rate_limit()
         
@@ -111,24 +95,56 @@ class FarcasterChannelScraper:
             "accept": "application/json",
             "api_key": self.NEYNAR_API_KEY
         }
-        params = {
-            "id": channel_id,
-            "limit": limit
-        }
         
-        try:
-            logger.info(f"Querying Neynar API for channel followers: {channel_id}")
-            response = r.get(base_url, headers=headers, params=params)
-            response.raise_for_status()
-            data = response.json()
-            return data
-        except r.RequestException as e:
-            logger.error(f"Error querying Neynar API for channel followers: {e}")
-            return self._handle_request_exception(e)
+        all_followers = []
+        cursor = None
+        
+        while True:
+            params = {
+                "id": channel_id,
+                "limit": min(limit, 100)  # API limit is 100 per request
+            }
+            
+            if cursor:
+                params["cursor"] = cursor
+            
+            try:
+                logger.info(f"Querying Neynar API for channel followers: {channel_id} (cursor: {cursor})")
+                response = r.get(base_url, headers=headers, params=params)
+                response.raise_for_status()
+                data = response.json()
+                
+                # Add followers from this page
+                if "followers" in data:
+                    batch_followers = data["followers"]
+                    all_followers.extend(batch_followers)
+                    logger.info(f"Retrieved {len(batch_followers)} followers (total: {len(all_followers)})")
+                
+                # Check if there are more followers to fetch
+                if "next" in data and data["next"] and "cursor" in data["next"]:
+                    cursor = data["next"]["cursor"]
+                    
+                    # If we've reached the limit, stop
+                    if len(all_followers) >= limit:
+                        logger.info(f"Reached follower limit ({limit}), stopping pagination")
+                        break
+                else:
+                    # No more pages
+                    break
+                
+                # Apply rate limiting
+                self.apply_rate_limit()
+                
+            except r.RequestException as e:
+                logger.error(f"Error querying Neynar API for channel followers: {e}")
+                return self._handle_request_exception(e)
+        
+        return {"followers": all_followers}
 
-    def get_channel_members(self, channel_id, limit=100):
+    def get_channel_members(self, channel_id, limit=1000):
         """
         Get members for a specific channel from the Neynar API.
+        Handles pagination to get all members.
         """
         self.apply_rate_limit()
 
@@ -137,25 +153,56 @@ class FarcasterChannelScraper:
             "accept": "application/json",
             "api_key": self.NEYNAR_API_KEY
         }
-        params = {
-            "channel_id": channel_id,
-            "limit": limit
-        }
-
-        try:
-            logger.info(f"Querying Neynar API for channel members: {channel_id}")
-            response = r.get(base_url, headers=headers, params=params)
-            response.raise_for_status()
-            data = response.json()
-            return data
-        except r.RequestException as e:
-            logger.error(f"Error querying Neynar API for channel members: {e}")
-            return self._handle_request_exception(e)
+        
+        all_members = []
+        cursor = None
+        
+        while True:
+            params = {
+                "channel_id": channel_id,
+                "limit": min(limit, 100)  # API limit is 100 per request
+            }
+            
+            if cursor:
+                params["cursor"] = cursor
+            
+            try:
+                logger.info(f"Querying Neynar API for channel members: {channel_id} (cursor: {cursor})")
+                response = r.get(base_url, headers=headers, params=params)
+                response.raise_for_status()
+                data = response.json()
+                
+                # Add members from this page
+                if "members" in data:
+                    batch_members = data["members"]
+                    all_members.extend(batch_members)
+                    logger.info(f"Retrieved {len(batch_members)} members (total: {len(all_members)})")
+                
+                # Check if there are more members to fetch
+                if "next" in data and data["next"] and "cursor" in data["next"]:
+                    cursor = data["next"]["cursor"]
+                    
+                    # If we've reached the limit, stop
+                    if len(all_members) >= limit:
+                        logger.info(f"Reached member limit ({limit}), stopping pagination")
+                        break
+                else:
+                    # No more pages
+                    break
+                
+                # Apply rate limiting
+                self.apply_rate_limit()
+                
+            except r.RequestException as e:
+                logger.error(f"Error querying Neynar API for channel members: {e}")
+                return self._handle_request_exception(e)
+        
+        return {"members": all_members}
 
     def get_channel_casts(self, channel_id, limit=100, with_replies=True, cutoff_days=None):
         """
         Get casts for a specific channel from the Neynar API, optionally filtering
-        out older casts via 'cutoff_days'.
+        out older casts via 'cutoff_days'. Handles pagination.
         """
         self.apply_rate_limit()
 
@@ -164,34 +211,75 @@ class FarcasterChannelScraper:
             "accept": "application/json",
             "api_key": self.NEYNAR_API_KEY
         }
-        params = {
-            "channel_ids": channel_id,
-            "limit": limit,
-            "with_replies": with_replies
-        }
-
-        try:
-            logger.info(f"Querying Neynar API for channel casts: {channel_id}")
-            response = r.get(base_url, headers=headers, params=params)
-            response.raise_for_status()
-            data = response.json()
-
-            # If there's no "casts" key, just return whatever we got
-            if "casts" not in data:
-                return data
-
-            if cutoff_days:
-                # Filter out casts older than now - cutoff_days
-                cutoff_dt = datetime.now(timezone.utc) - timedelta(days=cutoff_days)
-                filtered_casts = []
-                for cast in data["casts"]:
-                    cast_dt = self._parse_cast_timestamp(cast["timestamp"])
-                    if cast_dt >= cutoff_dt:
-                        filtered_casts.append(cast)
-                data["casts"] = filtered_casts
-
-            return data
-
-        except r.RequestException as e:
-            logger.error(f"Error querying Neynar API for channel casts: {e}")
-            return self._handle_request_exception(e)
+        
+        all_casts = []
+        cursor = None
+        reached_cutoff = False
+        
+        # Calculate cutoff datetime if needed
+        cutoff_dt = None
+        if cutoff_days:
+            cutoff_dt = datetime.now(timezone.utc) - timedelta(days=cutoff_days)
+            logger.info(f"Using cutoff date: {cutoff_dt.isoformat()}")
+        
+        while not reached_cutoff:
+            params = {
+                "channel_ids": channel_id,
+                "limit": min(limit, 100),  # API limit is 100 per request
+                "with_replies": with_replies
+            }
+            
+            if cursor:
+                params["cursor"] = cursor
+            
+            try:
+                logger.info(f"Querying Neynar API for channel casts: {channel_id} (cursor: {cursor})")
+                response = r.get(base_url, headers=headers, params=params)
+                response.raise_for_status()
+                data = response.json()
+                
+                # Add casts from this page, filtering by cutoff if needed
+                if "casts" in data:
+                    batch_casts = data["casts"]
+                    
+                    if cutoff_dt:
+                        filtered_batch = []
+                        for cast in batch_casts:
+                            cast_dt = self._parse_cast_timestamp(cast["timestamp"])
+                            if cast_dt >= cutoff_dt:
+                                filtered_batch.append(cast)
+                            else:
+                                # We've reached casts older than our cutoff
+                                reached_cutoff = True
+                        
+                        all_casts.extend(filtered_batch)
+                        logger.info(f"Retrieved {len(filtered_batch)} casts after filtering (total: {len(all_casts)})")
+                        
+                        # If this batch had casts filtered out due to age, we've reached the cutoff
+                        if len(filtered_batch) < len(batch_casts):
+                            logger.info(f"Reached cutoff date in this batch, stopping pagination")
+                            break
+                    else:
+                        all_casts.extend(batch_casts)
+                        logger.info(f"Retrieved {len(batch_casts)} casts (total: {len(all_casts)})")
+                
+                # Check if there are more casts to fetch
+                if "next" in data and data["next"] and "cursor" in data["next"]:
+                    cursor = data["next"]["cursor"]
+                    
+                    # If we've reached the limit, stop
+                    if len(all_casts) >= limit:
+                        logger.info(f"Reached cast limit ({limit}), stopping pagination")
+                        break
+                else:
+                    # No more pages
+                    break
+                
+                # Apply rate limiting
+                self.apply_rate_limit()
+                
+            except r.RequestException as e:
+                logger.error(f"Error querying Neynar API for channel casts: {e}")
+                return self._handle_request_exception(e)
+        
+        return {"casts": all_casts}
