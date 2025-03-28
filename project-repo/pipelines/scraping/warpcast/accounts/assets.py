@@ -16,7 +16,7 @@ class WarpcastS3Config(Config):
     bucket_name: str = "census-warpcast-account-metadata"
     aws_region: str = "us-east-1"
     batch_size: int = 100
-    requests_per_minute: int = 5  # Default to 5 RPM to be safe
+    requests_per_minute: int = 30 # Default to 5 RPM to be safe
     max_retries: int = 1 # Maximum number of retries for failed requests
 
 @asset
