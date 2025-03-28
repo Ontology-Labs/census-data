@@ -136,22 +136,13 @@ class FarcasterChannelScraper:
         try:
             logger.info(f"Querying Neynar API for channel casts: {channel_id}")
             response = requests.get(base_url, headers=headers, params=params)
-            
+        
             response.raise_for_status()
             data = response.json()
-            
-            # Apply cutoff if specified
-            if cutoff_days and 'casts' in data:
-                cutoff_time = datetime.now(timezone.utc) - timedelta(days=int(cutoff_days))
-                filtered_casts = []
-                for cast in data['casts']:
-                    if 'timestamp' in cast:
-                        cast_time = self.FARCASTER_EPOCH + timedelta(seconds=int(cast['timestamp']))
-                        if cast_time >= cutoff_time:
-                            filtered_casts.append(cast)
-                data['casts'] = filtered_casts
-                
+        
+            # Skip the timestamp filtering - just return raw data
             return data
+        
         except RequestException as e:
             logger.error(f"Error querying Neynar API for channel casts: {e}")
             return self._handle_request_exception(e)
