@@ -7,6 +7,7 @@ import requests as r
 import logging
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
+import uuid
 
 load_dotenv(override=True)
 
@@ -23,6 +24,7 @@ class FarcasterChannelScraper:
         self.NEYNAR_API_KEY = os.getenv('NEYNAR_API_KEY')
         self.FARCASTER_EPOCH = datetime(2021, 1, 1, tzinfo=timezone.utc)
         self.last_request_time = time.time()
+        self.request_count = 0
         
         # Rate limiting
         self.request_delay = (60.0 / requests_per_minute) + 0.2
@@ -43,18 +45,89 @@ class FarcasterChannelScraper:
             time.sleep(sleep_time)
         self.last_request_time = time.time()
 
-    def _handle_request_exception(self, e):
+    def _make_request(self, method, url, headers, params=None, json_data=None, timeout=30):
+        """
+        Make an HTTP request with detailed logging and timing.
+        Returns the response if successful, or raises an exception.
+        """
+        self.request_count += 1
+        request_id = str(uuid.uuid4())[:8]  # Generate short unique ID for this request
+        
+        # Log request details
+        logger.info(f"[REQ-{request_id}] Starting {method} request to {url}")
+        logger.info(f"[REQ-{request_id}] Params: {params}")
+        
+        # Set default timeout
+        request_kwargs = {
+            'headers': headers,
+            'timeout': timeout  # timeout in seconds
+        }
+        if params:
+            request_kwargs['params'] = params
+        if json_data:
+            request_kwargs['json'] = json_data
+            
+        # Record timing
+        start_time = time.time()
+        
+        try:
+            # Make the request
+            if method.upper() == 'GET':
+                response = r.get(url, **request_kwargs)
+            elif method.upper() == 'POST':
+                response = r.post(url, **request_kwargs)
+            else:
+                raise ValueError(f"Unsupported HTTP method: {method}")
+            
+            # Calculate timing
+            elapsed = time.time() - start_time
+            
+            # Log response details
+            logger.info(f"[REQ-{request_id}] Completed in {elapsed:.2f}s with status {response.status_code}")
+            
+            # Check for rate limit headers
+            rate_limit_info = {}
+            for header in response.headers:
+                if 'rate' in header.lower() or 'limit' in header.lower():
+                    rate_limit_info[header] = response.headers[header]
+            
+            if rate_limit_info:
+                logger.info(f"[REQ-{request_id}] Rate limit info: {rate_limit_info}")
+            
+            # Response size logging
+            content_length = len(response.content)
+            logger.info(f"[REQ-{request_id}] Response size: {content_length} bytes")
+            
+            # Raise an exception for bad status codes
+            response.raise_for_status()
+            
+            return response
+            
+        except r.RequestException as e:
+            # Calculate timing even for failed requests
+            elapsed = time.time() - start_time
+            logger.error(f"[REQ-{request_id}] Failed after {elapsed:.2f}s: {str(e)}")
+            
+            # Add detailed error logging
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"[REQ-{request_id}] Response status code: {e.response.status_code}")
+                logger.error(f"[REQ-{request_id}] Response content: {e.response.content[:500]}")
+            
+            # Re-raise the exception
+            raise
+
+    def _handle_request_exception(self, e, endpoint):
         """
         Helper to handle request exceptions, logs status code and returns an error dict.
         """
-        logger.error(f"Request error: {e}")
+        logger.error(f"Request error during {endpoint}: {e}")
         if hasattr(e, 'response') and e.response is not None:
             logger.error(f"Response status code: {e.response.status_code}")
-            logger.error(f"Response content: {e.response.content}")
+            logger.error(f"Response content: {e.response.content[:500]}")
             try:
                 return {"error": e.response.json()}
             except:
-                pass
+                return {"error": f"Status {e.response.status_code}: {str(e)}"}
         return {"error": str(e)}
 
     def _parse_cast_timestamp(self, timestamp_str):
@@ -90,16 +163,13 @@ class FarcasterChannelScraper:
         }
 
         try:
-            logger.info(f"API Request: GET {base_url} - ID: {channel_id}")
-            response = r.get(base_url, headers=headers, params=params)
-            logger.info(f"API Response: Status {response.status_code} - ID: {channel_id}")
-            response.raise_for_status()
+            logger.info(f"Fetching channel metadata for: {channel_id}")
+            response = self._make_request('GET', base_url, headers, params)
             data = response.json()
-            logger.info(f"Metadata Response: Channel keys present: {', '.join(data.keys())}")
+            logger.info(f"Metadata received successfully for channel {channel_id}")
             return data
         except r.RequestException as e:
-            logger.error(f"Error fetching channel metadata: {e}")
-            return self._handle_request_exception(e)
+            return self._handle_request_exception(e, f"metadata fetch for {channel_id}")
 
     def get_channel_followers(self, channel_id, limit=1000):
         """
@@ -129,25 +199,23 @@ class FarcasterChannelScraper:
                 params["cursor"] = cursor
             
             try:
-                logger.info(f"Followers API Request (Page {page_count}): GET {base_url} - ID: {channel_id}, Cursor: {cursor}")
-                response = r.get(base_url, headers=headers, params=params)
-                logger.info(f"Followers API Response (Page {page_count}): Status {response.status_code} - ID: {channel_id}")
-                response.raise_for_status()
+                logger.info(f"Followers fetch - page {page_count} for channel {channel_id}")
+                response = self._make_request('GET', base_url, headers, params)
                 data = response.json()
-                logger.info(f"Followers Response Keys: {', '.join(data.keys())}")
                 
                 # Add followers from this page
                 if "followers" in data:
                     batch_followers = data["followers"]
                     all_followers.extend(batch_followers)
-                    logger.info(f"Retrieved {len(batch_followers)} followers on page {page_count} (total: {len(all_followers)})")
+                    logger.info(f"Retrieved {len(batch_followers)} followers on page {page_count} (total: {len(all_followers)}/{limit})")
                 else:
                     logger.warning(f"No 'followers' key in response for page {page_count}")
+                    logger.warning(f"Response keys: {', '.join(data.keys())}")
                 
                 # Check if there are more followers to fetch
                 if "next" in data and data["next"] and "cursor" in data["next"]:
                     cursor = data["next"]["cursor"]
-                    logger.info(f"Next cursor found: {cursor}")
+                    logger.info(f"Next cursor found: {cursor[:20]}{'...' if len(cursor) > 20 else ''}")
                     
                     # If we've reached the limit, stop
                     if len(all_followers) >= limit:
@@ -162,8 +230,8 @@ class FarcasterChannelScraper:
                 self.apply_rate_limit()
                 
             except r.RequestException as e:
-                logger.error(f"Error querying Neynar API for channel followers: {e}")
-                return self._handle_request_exception(e)
+                logger.error(f"Error during followers fetch - page {page_count}")
+                return self._handle_request_exception(e, f"followers fetch for {channel_id}")
         
         logger.info(f"Completed followers fetch: {len(all_followers)} total followers from {page_count} pages")
         return {"followers": all_followers}
@@ -196,25 +264,23 @@ class FarcasterChannelScraper:
                 params["cursor"] = cursor
             
             try:
-                logger.info(f"Members API Request (Page {page_count}): GET {base_url} - ID: {channel_id}, Cursor: {cursor}")
-                response = r.get(base_url, headers=headers, params=params)
-                logger.info(f"Members API Response (Page {page_count}): Status {response.status_code} - ID: {channel_id}")
-                response.raise_for_status()
+                logger.info(f"Members fetch - page {page_count} for channel {channel_id}")
+                response = self._make_request('GET', base_url, headers, params)
                 data = response.json()
-                logger.info(f"Members Response Keys: {', '.join(data.keys())}")
                 
                 # Add members from this page
                 if "members" in data:
                     batch_members = data["members"]
                     all_members.extend(batch_members)
-                    logger.info(f"Retrieved {len(batch_members)} members on page {page_count} (total: {len(all_members)})")
+                    logger.info(f"Retrieved {len(batch_members)} members on page {page_count} (total: {len(all_members)}/{limit})")
                 else:
                     logger.warning(f"No 'members' key in response for page {page_count}")
+                    logger.warning(f"Response keys: {', '.join(data.keys())}")
                 
                 # Check if there are more members to fetch
                 if "next" in data and data["next"] and "cursor" in data["next"]:
                     cursor = data["next"]["cursor"]
-                    logger.info(f"Next cursor found: {cursor}")
+                    logger.info(f"Next cursor found: {cursor[:20]}{'...' if len(cursor) > 20 else ''}")
                     
                     # If we've reached the limit, stop
                     if len(all_members) >= limit:
@@ -229,8 +295,8 @@ class FarcasterChannelScraper:
                 self.apply_rate_limit()
                 
             except r.RequestException as e:
-                logger.error(f"Error querying Neynar API for channel members: {e}")
-                return self._handle_request_exception(e)
+                logger.error(f"Error during members fetch - page {page_count}")
+                return self._handle_request_exception(e, f"members fetch for {channel_id}")
         
         logger.info(f"Completed members fetch: {len(all_members)} total members from {page_count} pages")
         return {"members": all_members}
@@ -271,12 +337,9 @@ class FarcasterChannelScraper:
                 params["cursor"] = cursor
             
             try:
-                logger.info(f"Casts API Request (Page {page_count}): GET {base_url} - ID: {channel_id}, Cursor: {cursor}")
-                response = r.get(base_url, headers=headers, params=params)
-                logger.info(f"Casts API Response (Page {page_count}): Status {response.status_code} - ID: {channel_id}")
-                response.raise_for_status()
+                logger.info(f"Casts fetch - page {page_count} for channel {channel_id}")
+                response = self._make_request('GET', base_url, headers, params)
                 data = response.json()
-                logger.info(f"Casts Response Keys: {', '.join(data.keys())}")
                 
                 # Add casts from this page, filtering by cutoff if needed
                 if "casts" in data:
@@ -294,7 +357,7 @@ class FarcasterChannelScraper:
                                 reached_cutoff = True
                         
                         all_casts.extend(filtered_batch)
-                        logger.info(f"Added {len(filtered_batch)} casts after filtering by date (total: {len(all_casts)})")
+                        logger.info(f"Added {len(filtered_batch)} casts after filtering by date (total: {len(all_casts)}/{limit})")
                         
                         # If this batch had casts filtered out due to age, we've reached the cutoff
                         if len(filtered_batch) < len(batch_casts):
@@ -302,14 +365,15 @@ class FarcasterChannelScraper:
                             break
                     else:
                         all_casts.extend(batch_casts)
-                        logger.info(f"Added {len(batch_casts)} casts (total: {len(all_casts)})")
+                        logger.info(f"Added {len(batch_casts)} casts (total: {len(all_casts)}/{limit})")
                 else:
                     logger.warning(f"No 'casts' key in response for page {page_count}")
+                    logger.warning(f"Response keys: {', '.join(data.keys())}")
                 
                 # Check if there are more casts to fetch
                 if "next" in data and data["next"] and "cursor" in data["next"]:
                     cursor = data["next"]["cursor"]
-                    logger.info(f"Next cursor found: {cursor}")
+                    logger.info(f"Next cursor found: {cursor[:20]}{'...' if len(cursor) > 20 else ''}")
                     
                     # If we've reached the limit, stop
                     if len(all_casts) >= limit:
@@ -324,8 +388,8 @@ class FarcasterChannelScraper:
                 self.apply_rate_limit()
                 
             except r.RequestException as e:
-                logger.error(f"Error querying Neynar API for channel casts: {e}")
-                return self._handle_request_exception(e)
+                logger.error(f"Error during casts fetch - page {page_count}")
+                return self._handle_request_exception(e, f"casts fetch for {channel_id}")
         
         logger.info(f"Completed casts fetch: {len(all_casts)} total casts from {page_count} pages")
         return {"casts": all_casts}
