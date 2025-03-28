@@ -1,298 +1,197 @@
-# pipelines/scraping/warpcast/channels/assets.py
+# pipelines/scraping/warpcast/channels/scrape.py
 
-from dagster import asset, Config, AssetObservation, MetadataValue
-from typing import List
-from datetime import datetime
-import json
-import boto3
 import os
 import time
+import json
+import requests as r
+import logging
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
-load_dotenv()
+from .helpers  # Adjust import if needed
 
-# Import your scraper
-from pipelines.scraping.warpcast.channels.scrape import FarcasterChannelScraper
+load_dotenv(override=True)
 
-# Configuration
-class FarcasterChannelsS3Config(Config):
-    channel_ids: List[str] = []  # Will be populated from env in the asset function
-    bucket_name: str = "census-farcaster-channel-data"
-    aws_region: str = "us-east-1"
-    requests_per_minute: int = 45
-    max_retries: int = 1
-    cutoff_days: int = 1000
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-@asset
-def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
-    """Asset that fetches Farcaster channel data and stores it in S3."""
-    # Just directly load channel IDs from environment
-    channel_ids_env = os.getenv('CHANNEL_IDS')
-    
-    # Try to parse the environment variable
-    try:
-        channel_ids = json.loads(channel_ids_env) if channel_ids_env else []
-    except Exception as e:
-        context.log.error(f"Error parsing CHANNEL_IDS: {str(e)}")
-        channel_ids = []
-        
-    # Log what we loaded
-    context.log.info(f"Loaded channel IDs from environment: {channel_ids}")
-    
-    # Check if we have any channel IDs to process
-    total_channels = len(channel_ids)
-    if not total_channels:
-        context.log.error("No channel IDs provided - nothing to process")
-        return {
-            "channels_processed": 0,
-            "error": "No channel IDs provided"
-        }
-    
-    context.log.info(f"Starting to fetch data for {total_channels} channels: {channel_ids}")
-    context.log.info(
-        f"Rate limiting: {config.requests_per_minute} requests per minute, "
-        f"max retries: {config.max_retries}"
-    )
-    
-    # Create scraper instance with rate limiting
-    scraper = FarcasterChannelScraper(requests_per_minute=config.requests_per_minute)
-    
-    # Store channel data
-    all_channel_data = {"channels": []}
-    successful_channels = 0
-    failed_channels = 0
-    
-    # -------------------------
-    # HELPER: attempt a request
-    # -------------------------
-    def attempt_request(fetch_fn, *fetch_args, **fetch_kwargs):
+class FarcasterChannelScraper:
+    def __init__(self, requests_per_minute=45):
         """
-        Calls a fetch_fn like get_channel_metadata. Returns (success, data_or_err).
-         - success: bool, whether we treat it as success
-         - data_or_err: the raw response or an error explanation
-        We consider it success if the returned data is not None and does not have an "error" key
-        (for dictionaries).
+        Initialize the FarcasterChannelScraper with a certain rate limit.
+        requests_per_minute: how many requests per minute to allow.
         """
-        response = fetch_fn(*fetch_args, **fetch_kwargs)
+        self.NEYNAR_API_KEY = os.getenv('NEYNAR_API_KEY')
+        self.FARCASTER_EPOCH = datetime(2021, 1, 1, tzinfo=timezone.utc)
+        self.last_request_time = time.time()
         
-        if response is None:
-            return False, None
-        
-        # If it's a dict with an "error" key, treat that as a failure
-        if isinstance(response, dict) and "error" in response:
-            return False, response
-        
-        # Otherwise, success
-        return True, response
-
-    # -------------------------
-    # MAIN LOOP
-    # -------------------------
-    for channel_id in channel_ids:
-        context.log.info(f"Processing channel ID: {channel_id}")
-        
-        channel_dict = {
-            "channel_id": channel_id,
-            "success": False,
-            "errors": []
-        }
-        
-        # 1) Get channel metadata with retries
-        metadata = None
-        retry_count = 0
-        success = False
-        
-        while retry_count <= config.max_retries and not success:
-            if retry_count > 0:
-                wait_time = 20  # Wait 20 seconds before retrying
-                context.log.info(
-                    f"Retrying channel metadata for {channel_id} in {wait_time}s "
-                    f"(attempt {retry_count}/{config.max_retries})"
-                )
-                time.sleep(wait_time)
-            
-            success, meta_or_err = attempt_request(scraper.get_channel_metadata, channel_id)
-            
-            if success:
-                metadata = meta_or_err
-            else:
-                retry_count += 1
-                error_msg = (
-                    f"Failed to get metadata for channel {channel_id}. "
-                    f"Response was: {meta_or_err}"
-                )
-                context.log.error(error_msg)
-                channel_dict["errors"].append(error_msg)
-        
-        # If we got metadata, store raw
-        if metadata is not None:
-            channel_dict["metadata"] = metadata
-
-        # 2) Get followers
-        followers = None
-        retry_count = 0
-        success = False
-        
-        while retry_count <= config.max_retries and not success:
-            if retry_count > 0:
-                wait_time = 20
-                context.log.info(
-                    f"Retrying channel followers for {channel_id} in {wait_time}s "
-                    f"(attempt {retry_count}/{config.max_retries})"
-                )
-                time.sleep(wait_time)
-            
-            success, foll_or_err = attempt_request(scraper.get_channel_followers, channel_id)
-            
-            if success:
-                followers = foll_or_err
-            else:
-                retry_count += 1
-                error_msg = (
-                    f"Failed to get followers for channel {channel_id}. "
-                    f"Response was: {foll_or_err}"
-                )
-                context.log.error(error_msg)
-                channel_dict["errors"].append(error_msg)
-        
-        # Store raw response
-        if followers is not None:
-            channel_dict["followers"] = followers
-            # If it's a dict with a "followers" key, log the count
-            if isinstance(followers, dict):
-                num_followers = len(followers.get("followers", []))
-                context.log.info(f"Found {num_followers} followers for channel {channel_id}")
-
-        # 3) Get members
-        members = None
-        retry_count = 0
-        success = False
-        
-        while retry_count <= config.max_retries and not success:
-            if retry_count > 0:
-                wait_time = 20
-                context.log.info(
-                    f"Retrying channel members for {channel_id} in {wait_time}s "
-                    f"(attempt {retry_count}/{config.max_retries})"
-                )
-                time.sleep(wait_time)
-            
-            success, mem_or_err = attempt_request(scraper.get_channel_members, channel_id)
-            
-            if success:
-                members = mem_or_err
-            else:
-                retry_count += 1
-                error_msg = (
-                    f"Failed to get members for channel {channel_id}. "
-                    f"Response was: {mem_or_err}"
-                )
-                context.log.error(error_msg)
-                channel_dict["errors"].append(error_msg)
-
-        # Store raw response
-        if members is not None:
-            channel_dict["members"] = members
-            # If it's a dict with a "members" key, log the count
-            if isinstance(members, dict):
-                num_members = len(members.get("members", []))
-                context.log.info(f"Found {num_members} members for channel {channel_id}")
-
-        # 4) Get casts
-        casts = None
-        retry_count = 0
-        success = False
-        
-        while retry_count <= config.max_retries and not success:
-            if retry_count > 0:
-                wait_time = 20
-                context.log.info(
-                    f"Retrying channel casts for {channel_id} in {wait_time}s "
-                    f"(attempt {retry_count}/{config.max_retries})"
-                )
-                time.sleep(wait_time)
-            
-            success, casts_or_err = attempt_request(
-                scraper.get_channel_casts, channel_id, cutoff_days=config.cutoff_days
-            )
-            
-            if success:
-                casts = casts_or_err
-            else:
-                retry_count += 1
-                error_msg = (
-                    f"Failed to get casts for channel {channel_id}. "
-                    f"Response was: {casts_or_err}"
-                )
-                context.log.error(error_msg)
-                channel_dict["errors"].append(error_msg)
-        
-        # Store raw response
-        if casts is not None:
-            channel_dict["casts"] = casts
-            # If it's a dict with "casts", log length
-            if isinstance(casts, dict):
-                num_casts = len(casts.get("casts", []))
-                context.log.info(f"Found {num_casts} casts for channel {channel_id}")
-        
-        # Mark channel as successful if we got *any* data
-        if any(
-            key in channel_dict
-            for key in ["metadata", "followers", "members", "casts"]
-        ):
-            channel_dict["success"] = True
-            successful_channels += 1
-        else:
-            failed_channels += 1
-        
-        # Add channel data to result
-        all_channel_data["channels"].append(channel_dict)
-    
-    # Initialize S3 client
-    s3_client = boto3.client(
-        's3',
-        region_name=config.aws_region,
-        aws_access_key_id=os.getenv('AWS_ACCESS_KEY'),
-        aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
-    )
-    
-    # Generate filename with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    key = f"farcaster/channels/{timestamp}_channel_data.json"
-    
-    # Upload the data
-    try:
-        s3_client.put_object(
-            Bucket=config.bucket_name,
-            Key=key,
-            Body=json.dumps(all_channel_data),
-            ContentType='application/json'
+        # Rate limiting
+        self.request_delay = (60.0 / requests_per_minute) + 0.2
+        logger.info(
+            f"Rate limiting set to {requests_per_minute} requests/minute "
+            f"(delay: {self.request_delay:.2f}s)"
         )
-        context.log.info(f"Successfully uploaded data to s3://{config.bucket_name}/{key}")
-    except Exception as e:
-        context.log.error(f"Error uploading to S3: {str(e)}")
-        raise
-    
-    # Log summary
-    context.log.info(f"SUMMARY: Processed {total_channels} channels")
-    context.log.info(f"Successful channels: {successful_channels}, Failed channels: {failed_channels}")
-    
-    # Add metadata about the operation
-    meta_info = {
-        "channels_processed": MetadataValue.int(total_channels),
-        "successful_channels": MetadataValue.int(successful_channels),
-        "failed_channels": MetadataValue.int(failed_channels),
-        "s3_path": MetadataValue.text(f"s3://{config.bucket_name}/{key}"),
-        "timestamp": MetadataValue.text(datetime.now().isoformat())
-    }
-    
-    context.log_event(
-        AssetObservation(asset_key="farcaster_channels_to_s3", metadata=meta_info)
-    )
-    
-    return {
-        "channels_processed": total_channels,
-        "successful_channels": successful_channels,
-        "failed_channels": failed_channels,
-        "s3_path": f"s3://{config.bucket_name}/{key}"
-    }
+
+    def apply_rate_limit(self):
+        """
+        Ensures we don't exceed the specified request rate.
+        """
+        current_time = time.time()
+        elapsed = current_time - self.last_request_time
+        if elapsed < self.request_delay:
+            sleep_time = self.request_delay - elapsed
+            logger.info(f"Rate limiting: sleeping for {sleep_time:.2f}s")
+            time.sleep(sleep_time)
+        self.last_request_time = time.time()
+
+    def _handle_request_exception(self, e):
+        """
+        Helper to handle request exceptions, logs status code and returns an error dict.
+        """
+        logger.error(f"Request error: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Response status code: {e.response.status_code}")
+            logger.error(f"Response content: {e.response.content}")
+            try:
+                return {"error": e.response.json()}
+            except:
+                pass
+        return {"error": str(e)}
+
+    def _parse_cast_timestamp(self, timestamp_str):
+        """
+        Handle both numeric offsets and ISO8601 timestamps from the Neynar API.
+        Returns a Python datetime in UTC.
+        """
+        # Try interpreting timestamp_str as an integer offset from FARCASTER_EPOCH
+        try:
+            # e.g. '7200' means 7200 seconds after 2021-01-01T00:00:00Z
+            offset_seconds = int(timestamp_str)
+            return self.FARCASTER_EPOCH + timedelta(seconds=offset_seconds)
+        except (TypeError, ValueError):
+            # Fall back to parsing as an ISO8601 date string
+            # e.g. '2025-03-20T16:12:35.000Z'
+            if timestamp_str.endswith('Z'):
+                timestamp_str = timestamp_str[:-1] + '+00:00'
+            return datetime.fromisoformat(timestamp_str)
+
+    def get_channel_metadata(self, channel_name):
+        """
+        Fetch channel metadata by channel ID (or 'channel_name') from the Neynar API.
+        Uses the helpers.query_neynar_api function.
+        """
+        self.apply_rate_limit()  # apply rate limit before calling the API
+
+        headers = {
+            'accept': 'application/json',
+            'api_key': self.NEYNAR_API_KEY
+        }
+        params = {
+            'id': channel_name
+        }
+        endpoint = 'channel'
+
+        try:
+            logger.info(f"Fetching channel metadata for: {channel_name}")
+            channel_metadata = helpers.query_neynar_api(endpoint, params, headers)
+            return channel_metadata
+        except r.RequestException as e:
+            logging.error(f"Error fetching channel metadata: {e}")
+            return None
+
+    def get_channel_followers(self, channel_id, limit=1000):
+        """
+        Get followers for a specific channel from the Neynar API.
+        """
+        self.apply_rate_limit()
+        
+        base_url = "https://api.neynar.com/v2/farcaster/channel/followers"
+        headers = {
+            "accept": "application/json",
+            "api_key": self.NEYNAR_API_KEY
+        }
+        params = {
+            "id": channel_id,
+            "limit": limit
+        }
+        
+        try:
+            logger.info(f"Querying Neynar API for channel followers: {channel_id}")
+            response = r.get(base_url, headers=headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            return data
+        except r.RequestException as e:
+            logger.error(f"Error querying Neynar API for channel followers: {e}")
+            return self._handle_request_exception(e)
+
+    def get_channel_members(self, channel_id, limit=100):
+        """
+        Get members for a specific channel from the Neynar API.
+        """
+        self.apply_rate_limit()
+
+        base_url = "https://api.neynar.com/v2/farcaster/channel/member/list"
+        headers = {
+            "accept": "application/json",
+            "api_key": self.NEYNAR_API_KEY
+        }
+        params = {
+            "channel_id": channel_id,
+            "limit": limit
+        }
+
+        try:
+            logger.info(f"Querying Neynar API for channel members: {channel_id}")
+            response = r.get(base_url, headers=headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            return data
+        except r.RequestException as e:
+            logger.error(f"Error querying Neynar API for channel members: {e}")
+            return self._handle_request_exception(e)
+
+    def get_channel_casts(self, channel_id, limit=100, with_replies=True, cutoff_days=None):
+        """
+        Get casts for a specific channel from the Neynar API, optionally filtering
+        out older casts via 'cutoff_days'.
+        """
+        self.apply_rate_limit()
+
+        base_url = "https://api.neynar.com/v2/farcaster/feed/channels"
+        headers = {
+            "accept": "application/json",
+            "api_key": self.NEYNAR_API_KEY
+        }
+        params = {
+            "channel_ids": channel_id,
+            "limit": limit,
+            "with_replies": with_replies
+        }
+
+        try:
+            logger.info(f"Querying Neynar API for channel casts: {channel_id}")
+            response = r.get(base_url, headers=headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            # If there's no "casts" key, just return whatever we got
+            if "casts" not in data:
+                return data
+
+            if cutoff_days:
+                # Filter out casts older than now - cutoff_days
+                cutoff_dt = datetime.now(timezone.utc) - timedelta(days=cutoff_days)
+                filtered_casts = []
+                for cast in data["casts"]:
+                    cast_dt = self._parse_cast_timestamp(cast["timestamp"])
+                    if cast_dt >= cutoff_dt:
+                        filtered_casts.append(cast)
+                data["casts"] = filtered_casts
+
+            return data
+
+        except r.RequestException as e:
+            logger.error(f"Error querying Neynar API for channel casts: {e}")
+            return self._handle_request_exception(e)
