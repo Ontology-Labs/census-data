@@ -90,10 +90,12 @@ class FarcasterChannelScraper:
         }
 
         try:
-            logger.info(f"Fetching channel metadata for: {channel_id}")
+            logger.info(f"API Request: GET {base_url} - ID: {channel_id}")
             response = r.get(base_url, headers=headers, params=params)
+            logger.info(f"API Response: Status {response.status_code} - ID: {channel_id}")
             response.raise_for_status()
             data = response.json()
+            logger.info(f"Metadata Response: Channel keys present: {', '.join(data.keys())}")
             return data
         except r.RequestException as e:
             logger.error(f"Error fetching channel metadata: {e}")
@@ -114,8 +116,10 @@ class FarcasterChannelScraper:
         
         all_followers = []
         cursor = None
+        page_count = 0
         
         while True:
+            page_count += 1
             params = {
                 "id": channel_id,
                 "limit": min(limit, 100)  # API limit is 100 per request
@@ -125,26 +129,32 @@ class FarcasterChannelScraper:
                 params["cursor"] = cursor
             
             try:
-                logger.info(f"Querying Neynar API for channel followers: {channel_id} (cursor: {cursor})")
+                logger.info(f"Followers API Request (Page {page_count}): GET {base_url} - ID: {channel_id}, Cursor: {cursor}")
                 response = r.get(base_url, headers=headers, params=params)
+                logger.info(f"Followers API Response (Page {page_count}): Status {response.status_code} - ID: {channel_id}")
                 response.raise_for_status()
                 data = response.json()
+                logger.info(f"Followers Response Keys: {', '.join(data.keys())}")
                 
                 # Add followers from this page
                 if "followers" in data:
                     batch_followers = data["followers"]
                     all_followers.extend(batch_followers)
-                    logger.info(f"Retrieved {len(batch_followers)} followers (total: {len(all_followers)})")
+                    logger.info(f"Retrieved {len(batch_followers)} followers on page {page_count} (total: {len(all_followers)})")
+                else:
+                    logger.warning(f"No 'followers' key in response for page {page_count}")
                 
                 # Check if there are more followers to fetch
                 if "next" in data and data["next"] and "cursor" in data["next"]:
                     cursor = data["next"]["cursor"]
+                    logger.info(f"Next cursor found: {cursor}")
                     
                     # If we've reached the limit, stop
                     if len(all_followers) >= limit:
-                        logger.info(f"Reached follower limit ({limit}), stopping pagination")
+                        logger.info(f"Reached follower limit ({limit}), stopping pagination after page {page_count}")
                         break
                 else:
+                    logger.info(f"No more pages available, stopping pagination after page {page_count}")
                     # No more pages
                     break
                 
@@ -155,6 +165,7 @@ class FarcasterChannelScraper:
                 logger.error(f"Error querying Neynar API for channel followers: {e}")
                 return self._handle_request_exception(e)
         
+        logger.info(f"Completed followers fetch: {len(all_followers)} total followers from {page_count} pages")
         return {"followers": all_followers}
 
     def get_channel_members(self, channel_id, limit=1000):
@@ -172,8 +183,10 @@ class FarcasterChannelScraper:
         
         all_members = []
         cursor = None
+        page_count = 0
         
         while True:
+            page_count += 1
             params = {
                 "channel_id": channel_id,
                 "limit": min(limit, 100)  # API limit is 100 per request
@@ -183,26 +196,32 @@ class FarcasterChannelScraper:
                 params["cursor"] = cursor
             
             try:
-                logger.info(f"Querying Neynar API for channel members: {channel_id} (cursor: {cursor})")
+                logger.info(f"Members API Request (Page {page_count}): GET {base_url} - ID: {channel_id}, Cursor: {cursor}")
                 response = r.get(base_url, headers=headers, params=params)
+                logger.info(f"Members API Response (Page {page_count}): Status {response.status_code} - ID: {channel_id}")
                 response.raise_for_status()
                 data = response.json()
+                logger.info(f"Members Response Keys: {', '.join(data.keys())}")
                 
                 # Add members from this page
                 if "members" in data:
                     batch_members = data["members"]
                     all_members.extend(batch_members)
-                    logger.info(f"Retrieved {len(batch_members)} members (total: {len(all_members)})")
+                    logger.info(f"Retrieved {len(batch_members)} members on page {page_count} (total: {len(all_members)})")
+                else:
+                    logger.warning(f"No 'members' key in response for page {page_count}")
                 
                 # Check if there are more members to fetch
                 if "next" in data and data["next"] and "cursor" in data["next"]:
                     cursor = data["next"]["cursor"]
+                    logger.info(f"Next cursor found: {cursor}")
                     
                     # If we've reached the limit, stop
                     if len(all_members) >= limit:
-                        logger.info(f"Reached member limit ({limit}), stopping pagination")
+                        logger.info(f"Reached member limit ({limit}), stopping pagination after page {page_count}")
                         break
                 else:
+                    logger.info(f"No more pages available, stopping pagination after page {page_count}")
                     # No more pages
                     break
                 
@@ -213,6 +232,7 @@ class FarcasterChannelScraper:
                 logger.error(f"Error querying Neynar API for channel members: {e}")
                 return self._handle_request_exception(e)
         
+        logger.info(f"Completed members fetch: {len(all_members)} total members from {page_count} pages")
         return {"members": all_members}
 
     def get_channel_casts(self, channel_id, limit=100, with_replies=True, cutoff_days=None):
@@ -231,6 +251,7 @@ class FarcasterChannelScraper:
         all_casts = []
         cursor = None
         reached_cutoff = False
+        page_count = 0
         
         # Calculate cutoff datetime if needed
         cutoff_dt = None
@@ -239,6 +260,7 @@ class FarcasterChannelScraper:
             logger.info(f"Using cutoff date: {cutoff_dt.isoformat()}")
         
         while not reached_cutoff:
+            page_count += 1
             params = {
                 "channel_ids": channel_id,
                 "limit": min(limit, 100),  # API limit is 100 per request
@@ -249,14 +271,17 @@ class FarcasterChannelScraper:
                 params["cursor"] = cursor
             
             try:
-                logger.info(f"Querying Neynar API for channel casts: {channel_id} (cursor: {cursor})")
+                logger.info(f"Casts API Request (Page {page_count}): GET {base_url} - ID: {channel_id}, Cursor: {cursor}")
                 response = r.get(base_url, headers=headers, params=params)
+                logger.info(f"Casts API Response (Page {page_count}): Status {response.status_code} - ID: {channel_id}")
                 response.raise_for_status()
                 data = response.json()
+                logger.info(f"Casts Response Keys: {', '.join(data.keys())}")
                 
                 # Add casts from this page, filtering by cutoff if needed
                 if "casts" in data:
                     batch_casts = data["casts"]
+                    logger.info(f"Retrieved {len(batch_casts)} casts on page {page_count}")
                     
                     if cutoff_dt:
                         filtered_batch = []
@@ -269,25 +294,29 @@ class FarcasterChannelScraper:
                                 reached_cutoff = True
                         
                         all_casts.extend(filtered_batch)
-                        logger.info(f"Retrieved {len(filtered_batch)} casts after filtering (total: {len(all_casts)})")
+                        logger.info(f"Added {len(filtered_batch)} casts after filtering by date (total: {len(all_casts)})")
                         
                         # If this batch had casts filtered out due to age, we've reached the cutoff
                         if len(filtered_batch) < len(batch_casts):
-                            logger.info(f"Reached cutoff date in this batch, stopping pagination")
+                            logger.info(f"Reached cutoff date in page {page_count}, stopping pagination")
                             break
                     else:
                         all_casts.extend(batch_casts)
-                        logger.info(f"Retrieved {len(batch_casts)} casts (total: {len(all_casts)})")
+                        logger.info(f"Added {len(batch_casts)} casts (total: {len(all_casts)})")
+                else:
+                    logger.warning(f"No 'casts' key in response for page {page_count}")
                 
                 # Check if there are more casts to fetch
                 if "next" in data and data["next"] and "cursor" in data["next"]:
                     cursor = data["next"]["cursor"]
+                    logger.info(f"Next cursor found: {cursor}")
                     
                     # If we've reached the limit, stop
                     if len(all_casts) >= limit:
-                        logger.info(f"Reached cast limit ({limit}), stopping pagination")
+                        logger.info(f"Reached cast limit ({limit}), stopping pagination after page {page_count}")
                         break
                 else:
+                    logger.info(f"No more pages available, stopping pagination after page {page_count}")
                     # No more pages
                     break
                 
@@ -298,4 +327,5 @@ class FarcasterChannelScraper:
                 logger.error(f"Error querying Neynar API for channel casts: {e}")
                 return self._handle_request_exception(e)
         
+        logger.info(f"Completed casts fetch: {len(all_casts)} total casts from {page_count} pages")
         return {"casts": all_casts}
