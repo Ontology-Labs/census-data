@@ -1,4 +1,5 @@
 # pipelines/scraping/warpcast/channels/assets.py
+
 from dagster import asset, Config, AssetObservation, MetadataValue
 from typing import List
 from datetime import datetime
@@ -80,11 +81,12 @@ def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
                 time.sleep(wait_time)
             
             metadata = scraper.get_channel_metadata(channel_id)
-            context.log(metadata)
+            context.log.info(f"Metadata response: {metadata}")
             
             # Check if request was successful
             if metadata:
                 channel_dict["metadata"] = metadata
+                success = True
             else:
                 retry_count += 1
                 error_msg = f"Failed to get metadata for channel {channel_id}: {json.dumps(metadata.get('error', 'Unknown error'))}"
