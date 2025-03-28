@@ -1,3 +1,30 @@
+# pipelines/scraping/warpcast/channels/assets.py
+
+from dagster import asset, Config, AssetObservation
+from dagster.core.definitions.metadata import MetadataValue
+from typing import List
+from datetime import datetime
+import json
+import boto3
+import os
+import time
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Import project-specific modules
+from pipelines.scraping.warpcast.channels.scrape import FarcasterChannelScraper
+
+# Configuration
+class FarcasterChannelsS3Config(Config):
+    channel_ids: List[str] = []  # Will be populated from env in the asset function
+    bucket_name: str = "census-farcaster-channel-data"
+    aws_region: str = "us-east-1"
+    requests_per_minute: int = 45
+    max_retries: int = 1
+    cutoff_days: int = 1000
+
 @asset
 def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
     """Asset that fetches Farcaster channel data and stores it in S3"""

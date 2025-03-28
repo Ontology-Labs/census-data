@@ -1,3 +1,19 @@
+# pipelines/scraping/warpcast/channels/scrape.py
+
+import os
+import time
+import json
+import requests as r
+import logging
+from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 class FarcasterChannelScraper:
     def __init__(self, requests_per_minute=45):
         """
