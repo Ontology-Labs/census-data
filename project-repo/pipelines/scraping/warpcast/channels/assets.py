@@ -80,6 +80,7 @@ def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
                 time.sleep(wait_time)
             
             metadata = scraper.get_channel_metadata(channel_id)
+            context.log(metadata)
             
             # Check if request was successful
             if metadata:
@@ -113,6 +114,9 @@ def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
                 context.log.error(error_msg)
                 channel_dict["errors"].append(error_msg)
         
+        # Log next step
+        context.log.info("Processing members")
+        
         # Get members
         members = None
         retry_count = 0
@@ -135,6 +139,9 @@ def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
                 error_msg = f"Failed to get members for channel {channel_id}: {json.dumps(members.get('error', 'Unknown error'))}"
                 context.log.error(error_msg)
                 channel_dict["errors"].append(error_msg)
+        
+        # Log next step
+        context.log.info("Processing casts")
         
         # Get casts
         casts = None
