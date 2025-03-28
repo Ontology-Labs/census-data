@@ -1,5 +1,6 @@
 # pipelines/scraping/warpcast/channels/assets.py
 from dagster import asset, Config, AssetObservation, MetadataValue
+from typing import List
 from datetime import datetime
 import json
 import boto3
@@ -11,26 +12,29 @@ from pipelines.scraping.warpcast.channels.scrape import FarcasterChannelScraper
 
 # Configuration
 class FarcasterChannelsS3Config(Config):
-    channel_ids: list = []  # Default empty list, will be populated from environment
+    channel_ids: List[str] = []
     bucket_name: str = "census-farcaster-channel-data"
     aws_region: str = "us-east-1"
-    requests_per_minute: int = 45  # Default to 5 RPM to be safe
-    max_retries: int = 1  # Maximum number of retries for failed requests
-    cutoff_days: int = 1000  # Default to retrieve 30 days of casts
+    requests_per_minute: int = 45
+    max_retries: int = 1
+    cutoff_days: int = 1000
+    
+    # Load channel IDs from environment during validation
+    @classmethod
+    def model_validate(cls, data, *args, **kwargs):
+        if not data.get("channel_ids"):
+            channel_ids_env = os.getenv('CHANNEL_IDS')
+            if channel_ids_env:
+                try:
+                    data["channel_ids"] = json.loads(channel_ids_env)
+                except json.JSONDecodeError:
+                    pass
+        return super().model_validate(data, *args, **kwargs)
 
 @asset
 def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
     """Asset that fetches Farcaster channel data and stores it in S3"""
-    # If channel_ids is empty, try to load from environment
-    if not config.channel_ids:
-        channel_ids_env = os.getenv('CHANNEL_IDS')
-        if channel_ids_env:
-            try:
-                config.channel_ids = json.loads(channel_ids_env)
-            except json.JSONDecodeError:
-                context.log.error("Failed to parse CHANNEL_IDS environment variable as JSON")
-                config.channel_ids = []
-    
+    # Check if we have any channel IDs to process
     total_channels = len(config.channel_ids)
     if not total_channels:
         context.log.error("No channel IDs provided - nothing to process")
