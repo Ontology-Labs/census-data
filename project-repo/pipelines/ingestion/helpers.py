@@ -246,36 +246,59 @@ class Ingestor:
             chunks.append(df[i * chunk_size:(i + 1) * chunk_size])
         return chunks
     
-    def save_df_as_csv(self, df, file_name, acl='public-read', max_lines=10000, max_size=10000000):
-        """
-        Save a DataFrame to CSV files in S3, handling chunking if needed.
-        Returns a list of URLs to the CSV files.
-        """
-        chunks = [df]
+def save_df_as_csv(self, df, prefix):
+    """
+    Save a DataFrame to S3 as CSV and make it publicly accessible
+    Returns the S3 URLs of the saved files
+    """
+    if df.empty:
+        self.log("Attempted to save empty DataFrame", "warning")
+        return []
         
-        # Check if dataframe needs to be split due to size or row count
-        if df.memory_usage(index=False).sum() > max_size or len(df) > max_lines:
-            chunks = self.split_dataframe(df, chunk_size=max_lines)
+    self.log(f"Saving DataFrame with {len(df)} rows to S3 with prefix {prefix}")
+    
+    # Implementation detail - split into chunks if needed
+    chunk_size = 10000  # Adjust as needed
+    chunk_count = (len(df) + chunk_size - 1) // chunk_size
+    
+    s3_urls = []
+    
+    for i in range(chunk_count):
+        # Generate chunk name - keep everything at root level
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        chunk_name = f"{prefix}_{timestamp}"
+        if chunk_count > 1:
+            chunk_name += f"_part{i+1}"
+        chunk_name += ".csv"
         
-        logger.info(f"Uploading DataFrame in {len(chunks)} chunks...")
-        urls = []
+        # Get chunk of data
+        start_idx = i * chunk_size
+        end_idx = min((i + 1) * chunk_size, len(df))
+        chunk_df = df.iloc[start_idx:end_idx]
         
-        for chunk_id, chunk in enumerate(chunks):
-            chunk_name = f"{file_name}--{chunk_id}.csv"
-            
-            # Save to S3 directly using pandas
-            chunk.to_csv(f"s3://{self.bucket_name}/{chunk_name}", index=False, escapechar='\\')
-            
-            # Set ACL
-            self.s3_resource.ObjectAcl(self.bucket_name, chunk_name).put(ACL=acl)
-            
-            # Get URL
-            location = self.s3_client.get_bucket_location(Bucket=self.bucket_name)["LocationConstraint"]
-            if location is None:
-                location = "us-east-1"  # Default location
-            
-            url = f"https://s3-{location}.amazonaws.com/{self.bucket_name}/{chunk_name}"
-            urls.append(url)
-            logger.info(f"Saved chunk {chunk_id+1}/{len(chunks)} to {url}")
+        # Convert to CSV
+        csv_buffer = StringIO()
+        chunk_df.to_csv(csv_buffer, index=False)
+        csv_data = csv_buffer.getvalue()
         
-        return urls
+        self.log(f"Saving chunk {i+1}/{chunk_count} with {len(chunk_df)} rows to {chunk_name}")
+        
+        try:
+            # Upload to S3 with public-read ACL
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=chunk_name,  # No folder path
+                Body=csv_data,
+                ContentType='text/csv'
+            )
+            
+            # Get the S3 URL
+            s3_url = f"https://{self.bucket_name}.s3.amazonaws.com/{chunk_name}"
+            s3_urls.append(s3_url)
+            self.log(f"Successfully saved to {s3_url}")
+            
+        except Exception as e:
+            self.log(f"Error saving to S3: {str(e)}", "error")
+            raise
+    
+    return s3_urls

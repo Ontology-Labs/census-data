@@ -1,16 +1,34 @@
 from ...helpers import Cypher, get_query_logging, count_query_logging
 import logging
+import time
 
 class WarpcastCyphers(Cypher):
-    def __init__(self):
+    def __init__(self, context=None):
         super().__init__()
+        self.context = context
+        
+    def log(self, message, level="info"):
+        """Log using context if available, otherwise use standard logging"""
+        if self.context:
+            if level == "error":
+                self.context.log.error(message)
+            else:
+                self.context.log.info(message)
+        else:
+            if level == "error":
+                logging.error(message)
+            else:
+                logging.info(message)
         
     @count_query_logging
     def create_farcaster_accounts(self, csv_url):
         """
         Create Farcaster accounts from user data
         """
-        logging.info(f"Creating Farcaster accounts from {csv_url}")
+        self.log(f"Creating Farcaster accounts from {csv_url}")
+        self.log(f"Starting Neo4j query: LOAD CSV WITH HEADERS FROM '{csv_url}'...")
+        
+        start_time = time.time()
         query = f"""
         LOAD CSV WITH HEADERS FROM '{csv_url}' AS row
         MERGE (account:Account:Warpcast {{fid: row.fid}})
@@ -66,14 +84,20 @@ class WarpcastCyphers(Cypher):
                                    COALESCE(row.country, '')
         RETURN count(*)
         """
-        return self.query(query)[0]
+        result = self.query(query)[0]
+        elapsed = time.time() - start_time
+        self.log(f"Query completed in {elapsed:.2f} seconds: created/updated {result} Farcaster accounts")
+        return result
     
     @count_query_logging
     def link_accounts_to_wallets(self, csv_url):
         """
         Link Farcaster accounts to wallet accounts
         """
-        logging.info(f"Linking accounts to wallets from {csv_url}")
+        self.log(f"Linking accounts to wallets from {csv_url}")
+        self.log(f"Starting Neo4j query: LOAD CSV WITH HEADERS FROM '{csv_url}' for wallet linking...")
+        
+        start_time = time.time()
         query = f"""
         LOAD CSV WITH HEADERS FROM '{csv_url}' AS row
         WHERE row.custody_address IS NOT NULL AND trim(row.custody_address) <> ''
@@ -99,14 +123,20 @@ class WarpcastCyphers(Cypher):
             
         RETURN count(*)
         """
-        return self.query(query)[0]
+        result = self.query(query)[0]
+        elapsed = time.time() - start_time
+        self.log(f"Query completed in {elapsed:.2f} seconds: linked {result} accounts to wallets")
+        return result
     
     @count_query_logging
     def link_accounts_to_verifications(self, csv_url):
         """
         Link accounts to verification wallets
         """
-        logging.info(f"Creating verification links from {csv_url}")
+        self.log(f"Creating verification links from {csv_url}")
+        self.log(f"Starting Neo4j query: LOAD CSV WITH HEADERS FROM '{csv_url}' for verification linking...")
+        
+        start_time = time.time()
         query = f"""
         LOAD CSV WITH HEADERS FROM '{csv_url}' AS row
         WHERE row.verification_address IS NOT NULL AND trim(row.verification_address) <> ''
@@ -133,14 +163,20 @@ class WarpcastCyphers(Cypher):
             
         RETURN count(*)
         """
-        return self.query(query)[0]
+        result = self.query(query)[0]
+        elapsed = time.time() - start_time
+        self.log(f"Query completed in {elapsed:.2f} seconds: created {result} verification links")
+        return result
         
     @count_query_logging
     def process_mentioned_profiles(self, csv_url):
         """
         Process mentioned profiles in bio text and create MENTIONS relationships
         """
-        logging.info(f"Processing mentioned profiles from {csv_url}")
+        self.log(f"Processing mentioned profiles from {csv_url}")
+        self.log(f"Starting Neo4j query: LOAD CSV WITH HEADERS FROM '{csv_url}' for mentions processing...")
+        
+        start_time = time.time()
         query = f"""
         LOAD CSV WITH HEADERS FROM '{csv_url}' AS row
         WHERE row.mentioned_profiles IS NOT NULL AND trim(row.mentioned_profiles) <> ''
@@ -161,4 +197,7 @@ class WarpcastCyphers(Cypher):
         
         RETURN count(*)
         """
-        return self.query(query)[0]
+        result = self.query(query)[0]
+        elapsed = time.time() - start_time
+        self.log(f"Query completed in {elapsed:.2f} seconds: processed {result} mention relationships")
+        return result
