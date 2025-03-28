@@ -8,10 +8,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
-# If you have a local module named helpers with a function query_neynar_api
-# from pipelines.scraping.warpcast.channels import helpers
-# or from . import helpers
-import helpers  # Adjust import if needed
+from . import helpers  # Adjust import if needed
 
 load_dotenv(override=True)
 
