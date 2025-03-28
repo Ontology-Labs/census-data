@@ -6,36 +6,40 @@ import json
 import boto3
 import os
 import time
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Import your scraper
 from pipelines.scraping.warpcast.channels.scrape import FarcasterChannelScraper
 
 # Configuration
 class FarcasterChannelsS3Config(Config):
-    channel_ids: List[str] = []
+    channel_ids: List[str] = []  # Will be populated from env in the asset function
     bucket_name: str = "census-farcaster-channel-data"
     aws_region: str = "us-east-1"
     requests_per_minute: int = 45
     max_retries: int = 1
     cutoff_days: int = 1000
-    
-    # Load channel IDs from environment during validation
-    @classmethod
-    def model_validate(cls, data, *args, **kwargs):
-        if not data.get("channel_ids"):
-            channel_ids_env = os.getenv('CHANNEL_IDS')
-            if channel_ids_env:
-                try:
-                    data["channel_ids"] = json.loads(channel_ids_env)
-                except json.JSONDecodeError:
-                    pass
-        return super().model_validate(data, *args, **kwargs)
 
 @asset
 def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
     """Asset that fetches Farcaster channel data and stores it in S3"""
+    # Just directly load channel IDs from environment
+    channel_ids_env = os.getenv('CHANNEL_IDS')
+    
+    # Try to parse the environment variable
+    try:
+        channel_ids = json.loads(channel_ids_env) if channel_ids_env else []
+    except Exception as e:
+        context.log.error(f"Error parsing CHANNEL_IDS: {str(e)}")
+        channel_ids = []
+        
+    # Log what we loaded
+    context.log.info(f"Loaded channel IDs from environment: {channel_ids}")
+    
     # Check if we have any channel IDs to process
-    total_channels = len(config.channel_ids)
+    total_channels = len(channel_ids)
     if not total_channels:
         context.log.error("No channel IDs provided - nothing to process")
         return {
@@ -43,7 +47,7 @@ def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
             "error": "No channel IDs provided"
         }
     
-    context.log.info(f"Starting to fetch data for {total_channels} channels: {config.channel_ids}")
+    context.log.info(f"Starting to fetch data for {total_channels} channels: {channel_ids}")
     context.log.info(f"Rate limiting: {config.requests_per_minute} requests per minute, max retries: {config.max_retries}")
     
     # Create scraper instance with rate limiting
@@ -55,7 +59,7 @@ def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
     failed_channels = 0
     
     # Process each channel
-    for channel_id in config.channel_ids:
+    for channel_id in channel_ids:
         context.log.info(f"Processing channel ID: {channel_id}")
         
         channel_dict = {
