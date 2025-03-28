@@ -1,2 +1,5 @@
 locations:
-  - python_file: pipelines/orchestration/dagster_defs.py
+  - location_name: census-data
+    python_module:
+      module_name: pipelines.orchestration.dagster_defs
+      attribute: defs

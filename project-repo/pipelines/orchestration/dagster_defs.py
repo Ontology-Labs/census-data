@@ -1,15 +1,16 @@
 # pipelines/orchestration/dagster_defs.py
-from dagster import Definitions, job
+from dagster import Definitions, job, asset
 
-# Import assets from their own modules
+# Import all necessary assets and jobs from their modules
 from pipelines.scraping.warpcast.accounts.assets import warpcast_users_to_s3
+from pipelines.scraping.warpcast.accounts.scrape import WarpcastAccountScraper
 
 @job
 def warpcast_s3_job():
     """Job that loads Warpcast data into S3"""
     warpcast_users_to_s3()
 
-# Dagster definitions
+# Single source of truth for all Dagster definitions
 defs = Definitions(
     assets=[warpcast_users_to_s3],
     jobs=[warpcast_s3_job],
