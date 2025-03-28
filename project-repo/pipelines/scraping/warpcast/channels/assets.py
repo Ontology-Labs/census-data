@@ -82,8 +82,7 @@ def farcaster_channels_to_s3(context, config: FarcasterChannelsS3Config):
             metadata = scraper.get_channel_metadata(channel_id)
             
             # Check if request was successful
-            if metadata and not metadata.get('error'):
-                success = True
+            if metadata:
                 channel_dict["metadata"] = metadata
             else:
                 retry_count += 1
