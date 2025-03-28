@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.poetry]
+name = "census-data"
+version = "0.1.0"
+description = "Data collection and processing for census data"
+authors = ["Your Name <your.email@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+dagster = "^1.4.0"
+dagster-cloud = "^1.4.0"
+boto3 = "^1.28.0"
+requests = "^2.28.0"
+python-dotenv = "^1.0.0"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.0.0"
