@@ -1,5 +1,0 @@
-# dagster_cloud.yaml
-locations:
-  - location_name: census-data
-    code_source:
-      package_name: pipelines
